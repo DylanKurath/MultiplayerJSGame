@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Multiplayer Game</title>
+        <link href="{{ url_for('static', filename='tailwindOutput.css') }}" rel="stylesheet">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js" integrity="sha512-q/dWJ3kcmjBLU4Qc47E4A9kTB4m3wuTY7vkFJDTZKjTs8jhyGQnaUrxa0Ytd0ssMZhbNua9hE+E7Qv1j+DyZwA==" crossorigin="anonymous"></script>
+    </head>
+    <body class="h-dvh overflow-hidden flex flex-col gap-4 p-4 bg-sky-500">
+        <h1 class="text-2xl font-bold mx-auto">Gayme</h1>
+        <div id="login-div" class="flex flex-col mx-auto gap-4 w-1/3">
+            <input id="username" type="text" placeholder="Choose a username..." class="bg-gray-200 w-full p-2 text-center">
+            <button onclick="join()" class="bg-gray-300 rounded w-full font-bold p-2 hover:bg-gray-500 cursor-pointer">Play</button>
+        </div>
+        <div class="relative flex flex-1 min-h-0 w-full items-center justify-center overflow-hidden">
+            <canvas id="game-window" class="hidden border border-black relative w-full h-full"></canvas>
+            <div class="hidden absolute left-0 bottom-0 flex flex-col bg-gray-500/20">
+                <div id="chatLog" class="flex flex-col overflow-y-scroll">
+
+                </div>
+                <div class="flex">
+                    <input type="text" id="chatText" class="p-2">
+                    <button onclick="sendChat()" class="bg-gray-300 rounded font-bold p-2 hover:bg-gray-500 cursor-pointer">Chat</button>
+                </div>
+            </div>
+        </div>
+    </body>
+    <script type="text/javascript" charset="utf-8" defer>
+        const WORLD_W = {{ world_w }};
+        const WORLD_H = {{ world_h }};
+        const PLAYER_SIZE = 24;
+        const CAMERA_ZOOM = 2;
+        const EDGE_PADDING = 5;
+        
+        const canvas = document.getElementById('game-window');
+        const context = canvas.getContext('2d');
+        const canvasContainer = canvas.parentElement;
+        const chatText = document.getElementById('chatText');
+        let log = document.getElementById('chatLog');
+
+        function resizeCanvas() {
+            const { width, height } = canvasContainer.getBoundingClientRect();
+            const pixelRatio = window.devicePixelRatio || 1;
+            canvas.width = Math.round(width * pixelRatio);
+            canvas.height = Math.round(height * pixelRatio);
+            context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        }
+
+        new ResizeObserver(resizeCanvas).observe(canvasContainer);
+
+        let socket = null;
+        let userId = null;
+        let userName = '';
+        let players = {};
+
+        function join() {
+            userName = document.getElementById('username').value;
+            socket = io();
+            socket.on('connect', () => socket.emit('join', { name: userName }));
+            socket.on('welcome', (data) => { userId = data.id; });
+            socket.on('chat', drawChat);
+            socket.on('state', applyState);
+            document.getElementById('login-div').classList.add('hidden');
+            canvas.classList.remove('hidden');
+            resizeCanvas();
+            log.parentElement.classList.remove('hidden');
+            requestAnimationFrame(frame);
+        }
+        document.getElementById('username').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+
+        function sendChat() {
+            const text = chatText.value.trim();
+            if (text) socket.emit('chat', { text });
+            chatText.value = '';
+        }
+        chatText.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendChat();
+            if (e.key === 'Escape') chatText.blur();
+        });
+
+        function drawChat(message) {
+            let log = document.getElementById('chatLog');
+            let line = document.createElement('div');
+            let who = document.createElement('strong');
+            who.textContent = message.username + ': ';
+            line.append(who, document.createTextNode(message.text));
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        let keys = new Set();
+        let lastSent = '0,0';
+        const KEY_MAP = {
+            w: 'up',    ArrowUp: 'up', 
+            s: 'down',  ArrowDown: 'down',
+            a: 'left',  ArrowLeft: 'left', 
+            d: 'right', ArrowRight: 'right',
+        };
+
+        function sendInput() {
+            let dx = (keys.has('right') ? 1 : 0) - (keys.has('left') ? 1 : 0);
+            let dy = (keys.has('down') ? 1 : 0) - (keys.has('up') ? 1 : 0);
+            let key = `${dx},${dy}`;
+            if (key !== lastSent && socket) {
+                lastSent = key;
+                socket.emit('input', { dx, dy });
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') {
+                return;
+            }
+            if (e.key === 'Enter' && socket) {  
+                e.preventDefault(); 
+                chatText.focus();
+                return; 
+            }
+            const direction = KEY_MAP[e.key];
+            if (direction) { 
+                keys.add(direction); 
+                sendInput(); 
+                e.preventDefault(); 
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            const dir = KEY_MAP[e.key];
+            if (dir) { 
+                keys.delete(dir); 
+                sendInput(); 
+            }
+        });
+
+        window.addEventListener('blur', () => { 
+            keys.clear(); 
+            sendInput(); 
+        });
+
+        chatText.addEventListener('focus', () => { 
+            keys.clear(); 
+            sendInput(); 
+        });
+
+        function applyState(state) {
+            for (let id in state) {
+                let s = state[id];
+                if (!players[id]) {
+                    players[id] = { 
+                        x: s.x, 
+                        y: s.y, 
+                        tx: s.x, 
+                        ty: s.y, 
+                        name: s.name, 
+                        hue: s.hue 
+                    };
+                } else {
+                    Object.assign(players[id], { 
+                        tx: s.x, 
+                        ty: s.y, 
+                        name: s.name, 
+                        hue: s.hue 
+                    });
+                }
+            }
+            for (const id in players) {
+                if (!(id in state)) {
+                    delete players[id];
+                }
+            }
+        }
+
+        let last = performance.now();
+
+        function frame(now) {
+            const dt = Math.min((now - last) / 1000, 0.1);
+            last = now;
+
+            const blend = 1 - Math.exp(-15 * dt);
+            for (const id in players) {
+                const p = players[id];
+                p.x += (p.tx - p.x) * blend;
+                p.y += (p.ty - p.y) * blend;
+            }
+
+            draw();
+            requestAnimationFrame(frame);
+        }
+
+        function draw() {
+            const viewWidth = canvas.clientWidth;
+            const viewHeight = canvas.clientHeight;
+            const worldViewWidth = viewWidth / CAMERA_ZOOM;
+            const worldViewHeight = viewHeight / CAMERA_ZOOM;
+            const player = players[userId];
+            const cameraX = WORLD_W <= worldViewWidth
+                ? (WORLD_W - worldViewWidth) / 2
+                : Math.max(0, Math.min(WORLD_W - worldViewWidth, (player?.x ?? WORLD_W / 2) - worldViewWidth / 2));
+            const cameraY = WORLD_H <= worldViewHeight
+                ? (WORLD_H - worldViewHeight) / 2
+                : Math.max(0, Math.min(WORLD_H - worldViewHeight, (player?.y ?? WORLD_H / 2) - worldViewHeight / 2));
+
+            context.clearRect(0, 0, viewWidth, viewHeight);
+            context.save();
+            context.scale(CAMERA_ZOOM, CAMERA_ZOOM);
+            context.translate(-cameraX, -cameraY);
+
+            context.strokeStyle = 'rgba(0, 0, 0, 0.12)';
+            context.lineWidth = 1 / CAMERA_ZOOM;
+            context.beginPath();
+            const startX = Math.ceil(Math.max(0, cameraX) / 50) * 50;
+            const startY = Math.ceil(Math.max(0, cameraY) / 50) * 50;
+            for (let x = startX; x <= Math.min(WORLD_W, cameraX + worldViewWidth); x += 50) {
+                context.moveTo(x, Math.max(0, cameraY));
+                context.lineTo(x, Math.min(WORLD_H, cameraY + worldViewHeight));
+            }
+            for (let y = startY; y <= Math.min(WORLD_H, cameraY + worldViewHeight); y += 50) {
+                context.moveTo(Math.max(0, cameraX), y);
+                context.lineTo(Math.min(WORLD_W, cameraX + worldViewWidth), y);
+            }
+            context.stroke();
+
+            context.font = '14px system-ui, sans-serif';
+            context.textAlign = 'center';
+            for (const id in players) {
+                const p = players[id];
+                context.fillStyle = `hsl(${p.hue}, 70%, 50%)`;
+                context.fillRect(p.x - PLAYER_SIZE / 2, p.y - PLAYER_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE);
+                if (id === userId) {
+                    context.strokeStyle = '#000';
+                    context.lineWidth = 2 / CAMERA_ZOOM;
+                    context.strokeRect(p.x - PLAYER_SIZE / 2, p.y - PLAYER_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE);
+                }
+                context.fillStyle = '#000';
+                context.fillText(p.name, p.x, p.y - PLAYER_SIZE / 2 - 6);
+            }
+
+            context.strokeStyle = '#000';
+            context.lineWidth = 2 / CAMERA_ZOOM;
+            context.strokeRect(0, 0, WORLD_W, WORLD_H);
+            context.restore();
+        }
+    </script>
+</html>
