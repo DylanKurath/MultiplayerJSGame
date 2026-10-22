@@ -3,13 +3,19 @@
     <head>
         <title>Multiplayer Game</title>
         <link href="{{ url_for('static', filename='tailwindOutput.css') }}" rel="stylesheet">
+        <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
         <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js" integrity="sha512-q/dWJ3kcmjBLU4Qc47E4A9kTB4m3wuTY7vkFJDTZKjTs8jhyGQnaUrxa0Ytd0ssMZhbNua9hE+E7Qv1j+DyZwA==" crossorigin="anonymous"></script>
     </head>
     <body class="h-dvh overflow-hidden flex flex-col gap-4 p-4 bg-sky-500">
         <h1 class="text-2xl font-bold mx-auto">Gayme</h1>
         <div id="login-div" class="flex flex-col mx-auto gap-4 w-1/3">
-            <input id="username" type="text" placeholder="Choose a username..." class="bg-gray-200 w-full p-2 text-center">
-            <button onclick="join()" class="bg-gray-300 rounded w-full font-bold p-2 hover:bg-gray-500 cursor-pointer">Play</button>
+            <input id="username" type="text" placeholder="Username" minlength="3" maxlength="16" autocomplete="username" class="bg-gray-200 w-full p-2 text-center">
+            <input id="password" type="password" placeholder="Password" minlength="6" maxlength="128" autocomplete="current-password" class="bg-gray-200 w-full p-2 text-center">
+            <div class="flex gap-2">
+                <button onclick="authenticate('login')" class="bg-gray-300 rounded w-full font-bold p-2 hover:bg-gray-500 cursor-pointer">Log in</button>
+                <button onclick="authenticate('register')" class="bg-gray-300 rounded w-full font-bold p-2 hover:bg-gray-500 cursor-pointer">Create account</button>
+            </div>
+            <div id="auth-status" role="status" aria-live="polite"></div>
         </div>
         <div class="relative flex flex-1 min-h-0 w-full items-center justify-center overflow-hidden">
             <canvas id="game-window" class="hidden border border-black relative w-full h-full"></canvas>
@@ -51,21 +57,85 @@
         let userId = null;
         let userName = '';
         let players = {};
+        let credentials = null;
+        let gameStarted = false;
 
-        function join() {
-            userName = document.getElementById('username').value;
-            socket = io();
-            socket.on('connect', () => socket.emit('join', { name: userName }));
-            socket.on('welcome', (data) => { userId = data.id; });
-            socket.on('chat', drawChat);
-            socket.on('state', applyState);
-            document.getElementById('login-div').classList.add('hidden');
-            canvas.classList.remove('hidden');
-            resizeCanvas();
-            log.parentElement.classList.remove('hidden');
-            requestAnimationFrame(frame);
+        function authenticate(mode) {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const status = document.getElementById('auth-status');
+            if (!/^[A-Za-z0-9_]{3,16}$/.test(username)) {
+                status.textContent = 'Username must be 3-16 letters, numbers, or underscores.';
+                return;
+            }
+            if (password.length < 6 || password.length > 128) {
+                status.textContent = 'Password must be between 6 and 128 characters.';
+                return;
+            }
+            credentials = { mode, username, password };
+            status.textContent = 'Connecting...';
+            if (!socket) {
+                socket = io();
+                socket.on('connect', sendCredentials);
+                socket.on('account_result', handleAccountResult);
+                socket.on('welcome', handleWelcome);
+                socket.on('disconnect', () => {
+                    if (gameStarted) {
+                        userId = null;
+                        players = {};
+                    }
+                });
+                socket.on('chat', drawChat);
+                socket.on('state', applyState);
+            }
+            if (socket.connected) {
+                sendCredentials();
+            }
         }
-        document.getElementById('username').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+
+        function sendCredentials() {
+            if (credentials) {
+                socket.emit(credentials.mode, {
+                    username: credentials.username,
+                    password: credentials.password,
+                });
+            }
+        }
+
+        function handleAccountResult(result) {
+            document.getElementById('auth-status').textContent = result.message;
+            if (!result.ok) {
+                return;
+            }
+            credentials.mode = 'login';
+            if (!gameStarted) {
+                gameStarted = true;
+                document.getElementById('login-div').classList.add('hidden');
+                canvas.classList.remove('hidden');
+                resizeCanvas();
+                log.parentElement.classList.remove('hidden');
+                requestAnimationFrame(frame);
+            }
+        }
+
+        function handleWelcome(data) {
+            userId = data.id;
+            userName = data.name;
+            players[userId] = {
+                x: data.x,
+                y: data.y,
+                tx: data.x,
+                ty: data.y,
+                name: data.name,
+                hue: data.hue,
+            };
+        }
+        document.getElementById('username').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') authenticate('login');
+        });
+        document.getElementById('password').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') authenticate('login');
+        });
 
         function sendChat() {
             const text = chatText.value.trim();

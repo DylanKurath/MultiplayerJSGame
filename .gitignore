@@ -1,3 +1,5 @@
+__pycache__/
 tailwindcss.exe
 .venv
+instance/
 server.cpython-312.pyc
